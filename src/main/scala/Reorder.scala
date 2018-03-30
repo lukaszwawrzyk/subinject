@@ -1,6 +1,6 @@
 package test
 
-import fp.{ Injectable, SubInject }
+import fp.{ CopKInjectable, SubInject }
 
 import scalaz.~>
 import iotaz.TListK.:::
@@ -12,18 +12,14 @@ import scala.language.higherKinds
 object Reorder extends App {
 
   // todo compare actual types when matching as StrMap is now != Map[String, ?]
-  type Outer[A] = CopK[List ::: Option ::: Seq ::: StrMap ::: TNilK, A]
-  type Inner[A] = CopK[List ::: StrMap ::: TNilK, A]
+  type Outer[A] = CopK[List ::: Option ::: Seq ::: Map[String, ?] ::: TNilK, A]
+  type Inner[A] = CopK[List ::: Map[String, ?] ::: TNilK, A]
   type StrMap[A] = Map[String, A]
 
-//  implicit def injectToInjectable[F[_], G[α] <: iota.CopK[_, α]](implicit IN: CopK.Inject[F, G]): Injectable[F, G] = new Injectable[F, G] {
-//    override def inject: F ~> G = IN.inj
-//    override def project: G ~> λ[a => Option[F[a]]] = IN.prj
-//  }
 
-  val sublistInject: Injectable[Inner, Outer] = SubInject.summon[Inner, Outer]
+  val sublistInject: CopKInjectable[Inner, Outer] = SubInject.summon[Inner, Outer]
 
-  val sublistInject2: Injectable[Inner, Outer] = new Injectable[Inner, Outer] {
+  val sublistInject2: CopKInjectable[Inner, Outer] = new CopKInjectable[Inner, Outer] {
     override def inject: Inner ~> Outer = new ~>[Inner, Outer] {
       override def apply[A](fa: Inner[A]): Outer[A] = {
         fa.index match {

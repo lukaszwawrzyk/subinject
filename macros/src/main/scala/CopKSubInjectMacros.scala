@@ -1,6 +1,6 @@
 package iotaz.internal
 
-import fp.Injectable
+import fp.CopKInjectable
 import iotaz.CopK
 
 import scala.language.experimental.macros
@@ -9,7 +9,7 @@ import scala.reflect.macros.whitebox
 import scalaz.Scalaz._
 import scalaz._
 
-class SubInjectMacros(val c: whitebox.Context) {
+class CopKSubInjectMacros(val c: whitebox.Context) {
   import c.universe._
 
   private[this] val tb = IotaMacroToolbelt(c)
@@ -18,17 +18,17 @@ class SubInjectMacros(val c: whitebox.Context) {
     implicit
     evInner: c.WeakTypeTag[Inner[_]],
     evOuter: c.WeakTypeTag[Outer[_]]
-  ): c.Expr[Injectable[Inner, Outer]] = {
+  ): c.Expr[CopKInjectable[Inner, Outer]] = {
     val Inner = evInner.tpe
     val Outer = evOuter.tpe
 
     val res = tb.foldAbort(for {
       _ <- guardAssumptions("Inner", Inner)
       _ <- guardAssumptions("Outer", Outer)
-      innerTypes <- extractTypes(Inner)
-      outerTypes <- extractTypes(Outer)
+      innerTypes <- extractCoproductTypes(Inner)
+      outerTypes <- extractCoproductTypes(Outer)
       innerTypeToOuterIndex <- innerTypes.traverseU { tpe =>
-        findIndex(outerTypes, tpe).map(tpe -> _).toSuccessNel(s"$tpe could not be found in $Outer")
+        findIndex(outerTypes, tpe).map(tpe -> _).toSuccessNel(s"$tpe could not be found in $Outer\nDebugInfo\n\nInner:\n$innerTypes\n\nOuter:\n$outerTypes\n\n")
       }.map(_.toMap).toEither
     } yield {
       makeInjectable(Inner, Outer, innerTypes, outerTypes, innerTypeToOuterIndex)
@@ -37,18 +37,21 @@ class SubInjectMacros(val c: whitebox.Context) {
   }
 
   private def makeInjectable(
-    InnerT: Type,
-    OuterT: Type,
+    InnerType: Type,
+    OuterType: Type,
     innerTypes: List[Type],
     outerTypes: List[Type],
     innerTypeToOuterIndex: Map[Type, Int]
   ): Tree = {
-    val Inner = toTypeTree(InnerT)
-    val Outer = toTypeTree(OuterT)
-    val Transf = tq"_root_.scalaz.NaturalTransformation"
+    val Inner = toTypeTree(InnerType)
+    val Outer = toTypeTree(OuterType)
+    val NaturalTransformation = tq"_root_.scalaz.NaturalTransformation"
+    val CopKInjectable = tq"_root_.fp.CopKInjectable"
+    val CopK = q"_root_.iotaz.CopK"
+
     val A = TypeName(c.freshName("A"))
     val fa = TermName(c.freshName("fa"))
-    val CopK = q"_root_.iotaz.CopK"
+
     val projectReturnType = {
       val Lambda = TypeName(c.freshName("Lambda"))
       val a = TypeName(c.freshName("a"))
@@ -65,7 +68,7 @@ class SubInjectMacros(val c: whitebox.Context) {
       val projectableCases = innerTypes.zipWithIndex.map {
         case (tpe, index) =>
           val mappedIndex = innerTypeToOuterIndex(tpe)
-          cq"$mappedIndex => scala.Some($CopK.unsafeApply($index, fa.value))"
+          cq"$mappedIndex => scala.Some($CopK.unsafeApply($index, $fa.value))"
       }
       val nonProjectableCases = (outerTypes.indices.toSet -- innerTypeToOuterIndex.values).map { index =>
         cq"$index => scala.None"
@@ -75,8 +78,8 @@ class SubInjectMacros(val c: whitebox.Context) {
     }
 
     q"""
-       new Injectable[$Inner, $Outer] {
-         override def inject: $Transf[$Inner, $Outer] = new $Transf[$Inner, $Outer] {
+       new $CopKInjectable[$Inner, $Outer] {
+         override def inject: $NaturalTransformation[$Inner, $Outer] = new $NaturalTransformation[$Inner, $Outer] {
            override def apply[$A]($fa: $Inner[$A]): $Outer[$A] = {
              $fa.index match {
                case ..$injectCases
@@ -86,8 +89,8 @@ class SubInjectMacros(val c: whitebox.Context) {
            }
          }
 
-         override def project: $Transf[$Outer, $projectReturnType] = new $Transf[$Outer, $projectReturnType] {
-           override def apply[$A](fa: $Outer[$A]): scala.Option[$Inner[$A]] = {
+         override def project: $NaturalTransformation[$Outer, $projectReturnType] = new $NaturalTransformation[$Outer, $projectReturnType] {
+           override def apply[$A]($fa: $Outer[$A]): scala.Option[$Inner[$A]] = {
              $fa.index match {
                case ..$projectCases
                case other => throw new _root_.java.lang.Exception(
@@ -99,11 +102,11 @@ class SubInjectMacros(val c: whitebox.Context) {
      """
   }
 
-  private def findIndex(outerTypes: List[Type], tpe: Type) = {
-    Option(outerTypes.indexOf(tpe)).filter(_ != -1)
+  private def findIndex(haystack: List[Type], needle: Type): Option[Int] = {
+    Option(haystack.indexWhere(_ =:= needle)).filter(_ != -1)
   }
 
-  private def extractTypes(T: Type): Either[NonEmptyList[String], List[Type]] = {
+  private def extractCoproductTypes(T: Type): Either[NonEmptyList[String], List[Type]] = {
     for {
       copK <- tb.destructCopK(T).leftMap(NonEmptyList(_))
       tpes <- tb.memoizedTListKTypes(copK.L).leftMap(NonEmptyList(_))
